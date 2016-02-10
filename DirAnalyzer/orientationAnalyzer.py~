@@ -1,0 +1,41 @@
+class OrientationAnalyzer:
+  ''' This is the main class for orientation analysis framework'''
+  def  __init__(self, fileFactory, centerlineGen, filters):
+    ''' Initilization code for this class
+    INPUT:
+    -fileFactory: this provies iterator like interface for image handling
+    -centerlineGen: this function generator centerline for given image
+    - filters: filters generator for  image analysis
+    '''
+    self._ImgGen = fileFactory
+    self._centGen = centerlineGen
+    self._fltGen = filters
+
+  def _buildOrientMap(flt, I):
+    '''This function builds filters and estimates orientation Map for image I'''
+    pass
+  def buildMultiScaleOrientMap(fltParamL, I):
+    ''' This is multiscale version where list of filters fltL are used to
+    estimate orientations at an image I as per given filters  list
+    INPUT:-
+    - filtParamL: list of dictionary of filter params
+    - I: Image for filter analysis
+    '''
+    pass
+  
+  def displayMap(orientMap):
+    ''' Displays hte orientation histogram
+    '''
+    pass
+
+def main():
+  import skimage as ski
+  from .dirFilter2D import GetAngleAssignment, dirFilter2D
+  fileFactory = None
+  orientAnlz = OrientationAnalyzer(fileFactory, ski.morphology.skeletonize,
+                                    )
+
+if __name__ == '__main__':
+  main()  
+    
+  

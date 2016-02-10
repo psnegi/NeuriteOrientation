@@ -1,0 +1,372 @@
+import cv2 as cv
+import numpy as np
+from  scipy import ndimage
+#import skimage.morphology as skimorph
+from matplotlib import pyplot as plt
+from os.path import join
+from Util.princomp import getPCA
+import config,  logging
+from neuriteTracer import NeuriteTracer
+import Util.cvUtility as cvUtil
+import Util.geometry as gm
+#import Util.bimAnalysis as bimA
+#import Util.dirFilter as df
+#from skimage.feature import corner_harris, corner_subpix, corner_peaks
+#import Util.branchPoint as brpnt
+#import Util.cvUtility as cvUtil
+
+
+#import mahotas as mh
+class CenterLineTracer:
+    """This is main class for generating centerline for segemented solid
+     To create an instance on this class see runCenterline.py """
+    def __init__(self, xSeg, xSomaSeg, algoConfig):
+        self.ac = algoConfig
+        self.minNeuLen = algoConfig['minNeuLen']
+        self.xSeg = xSeg
+        self.xSomaSeg = xSomaSeg
+        self.minComp = algoConfig['minComp']
+        self.cutOff =  algoConfig['cutOff']
+        self.maxSquareSize =algoConfig['maxSquareSize']
+        self.nbhSz =algoConfig['neighborhoodSize']
+        self.zSmear =algoConfig['zSmear']
+        if config.displayPlotFig:
+            plt.imshow(self.xSeg)            
+            plt.show()
+        #self.xSeg = cv.morphologyEx(self.xSeg, cv.MORPH_CLOSE, \
+        #                cv.getStructuringElement(cv.MORPH_ELLIPSE, (5,5)))
+                    
+        if 0:
+          plt.imshow(self.xSeg)
+          plt.show()
+
+        #self.xSeg = cvUtil.removeConnectedComponent(self.xSeg, self.minComp)
+        if 1:
+          plt.imshow(self.xSeg)
+          plt.show()
+        self.xDistTrans = cv.distanceTransform(self.xSeg, cv.DIST_L2, 3)  
+            
+            
+    def genSeed(self, LB):
+        """INPUT: B<-Binary Solid
+                  LB<- Lower Bound on sedd creation
+           OUTPUT: S-> List of indices of seeds
+                   D-> Distance transform on B
+        I->Set of indices on the solid inside the voulme """
+        #some more clean of segmented Solid
+        # @TODO how to estimate ellipse size
+          
+        #compute the distance solid
+        #distTrans = np.zeros(self.xSeg.shape, dtype=float); 
+ 
+ #       cv.distanceTransform(self.xSeg,distTrans, distance_type=cv.DIST_L2, mask_size =3)
+        xDistTrans =self.xDistTrans
+        xDistTrans[xDistTrans<1] =1
+        if config.displayPlotFig:
+            plt.imshow(xDistTrans)
+            plt.show()
+        
+        # @TODO(2) was like k=2*min(np.floor(np.max(xDistTrans[xDistTrans>.5])),
+        #    self.maxSquareSize). Not sure of multiplicatio by 2
+        k=min(np.floor(np.max(xDistTrans[xDistTrans>.5])),self.maxSquareSize)
+        #k = 1
+        c =self.nbhSz
+        d =xDistTrans.ndim;
+        #s =c*np.ones((1,d),np.int);
+        F=((-1.0)/(np.power(c,d)-1))*np.ones(d*[c])
+        F.ravel()[(c**d-1)/2]=2
+        
+        xCenter =ndimage.convolve(xDistTrans,F,mode ='nearest')
+        xBorder =np.ones(xDistTrans.shape, dtype =bool);
+        #@TODO this is dimension dependent code. Fix for any dimension
+        bWidth=3
+        xBorder[bWidth:-bWidth,bWidth:-bWidth] =False;
+        #ignore the data near boundary
+        xCenter[xBorder]=0;
+        xCenter =(1.0/np.max(abs(xCenter[:])))*xCenter
+        if config.displayPlotFig:
+            plt.imshow(xCenter)
+            plt.title('centerLine after filtering and normalization')
+            plt.show()
+
+
+        xCenter =xCenter >LB
+        if 0:
+            plt.imshow(xCenter)
+            plt.title('centerLine after thresholding')
+            plt.show()
+
+
+        xCenter=np.flatnonzero(xCenter)
+        
+            
+        # build the nbh box around valid pixels.  
+        box =np.array(list(self.xSeg.shape))
+        box =np.roll(box,1)
+        # @TODO this is dimension dependent code
+        box[0] =1
+        box =box.cumprod()
+        nx, ny = np.meshgrid(np.array([-1, 0, 1]),np.array([-box[1], 0, box[1]]))        
+        nbhBox =nx+ny
+        nbhBox =[item for sublist in nbhBox.tolist()  for item in sublist]
+        V =np.zeros(xCenter.shape, dtype =bool)
+        for n,xCenterIdx in enumerate(xCenter):
+            neigh =xCenterIdx+nbhBox
+            x =max(xDistTrans.ravel()[neigh])
+            y =xDistTrans.ravel()[xCenterIdx]
+            if (x-y) < self.cutOff:
+                V[n]=True
+        xCenter =xCenter[V]
+        V=np.ones(xCenter.shape, dtype=bool)
+        #point on centerline should be max in its neighborhood
+        # Following loops need to be removed
+        #Condition in if if never true
+        for n,xCenterIdx in enumerate(xCenter):
+            neigh = xCenterIdx+nbhBox
+            neigh = np.intersect1d(neigh, xCenter)
+            x =max(xDistTrans.ravel()[neigh])
+            y =xDistTrans.ravel()[xCenterIdx]
+            if x<y:
+                V[n]=False
+                
+        xCenter =xCenter[V]
+        xCenterDistTrans =xDistTrans.ravel()[xCenter]
+        
+        # @TODO this is dimension dependent code
+        box[0] =1
+        box =box.cumprod()
+        nx, ny = np.meshgrid(np.array(list(np.int32(np.linspace(-k*box[0],
+        k*box[0],2*k+1)))), np.array(list(np.int32(np.linspace(-k*box[1],
+        k*box[1],2*k+1)))))        
+        nbhBox =nx+ny
+        nbhBox =[item for sublist in nbhBox.tolist()  for item in sublist]
+        S = []
+        while xCenter.size:
+          i = xCenterDistTrans.argmax()
+          idx = xCenter[i]
+          S.append(idx)
+          neigh = idx + nbhBox
+          xCenter = np.setdiff1d(xCenter, neigh)
+          xCenterDistTrans = xDistTrans.ravel()[xCenter]
+        if config.displayPlotFig:
+            X = np.zeros(self.xSeg.shape)
+            X.ravel()[S] =1
+            plt.imshow(X, cmap = plt.cm.gray_r)
+            plt.title('Seed after sampling around max values')
+            plt.show()
+        #@TODO remove this magic number 2  
+        r =  np.ceil(np.max(xDistTrans)) +2
+        r = 8
+            
+        #M = np.ones(self.xSeg.shape, dtype = bool)
+        dirEstimate, invalidIdx = getPCA(S, self.xSeg.shape, 2*self.zSmear*r)
+        
+        nbhBox = gm.getLinearNeighborhood(self.xSeg.shape, r)
+        # remove the place of seed itself
+        nbhBox.remove(0)
+        J = np.ones(len(S), dtype = bool)
+        for sIdx , seed in enumerate(S):
+          reg = seed + nbhBox
+          reg = np.intersect1d(reg, S)
+          if reg.size:
+            dirAtSeed =dirEstimate[sIdx,:]
+            cloudCoordinateAtSeed = np.unravel_index(reg, self.xSeg.shape)
+            seedCoordinate = np.unravel_index(seed, self.xSeg.shape)
+            cloudCoordinateAtSeed = np.array(cloudCoordinateAtSeed).T  \
+                                       -  np.array([seedCoordinate])
+            #cloudCoordinateAtSeed = np.array(cloudCoordinateAtSeed)
+            W = 1.0*cloudCoordinateAtSeed /np.sqrt(np.array([np.diag(np.dot(cloudCoordinateAtSeed,  cloudCoordinateAtSeed.T))]).T) 
+            W = np.abs(np.dot(W,dirAtSeed))
+            K = W < .5
+            distanceAroundSeed = xDistTrans.ravel()[reg[K]]
+            if distanceAroundSeed.size >0 and xDistTrans.ravel()[seed] < np.max(distanceAroundSeed):
+              J[sIdx] = False
+          #Drop seed by projection is 2D is not clear  
+          #elif xDistTrans.ravel()[seed] == np.max(xDistTrans.ravel()[reg[K]]):
+             # J[sIdx] = dropSeedByProjection(seed, reg[K], 2*r)
+                           
+        S = np.array(S, dtype = int)
+        # @TODO Not sure of further seeding decimation so
+        #  comment following line to increase seeding density
+        #S = S[J]
+        xDistTrans[self.xSeg <1] = 0
+        SS = self.secondRoundSeeding(xDistTrans, S)
+        S = S.tolist()+SS
+        if config.displayPlotFig:
+            X = np.zeros(self.xSeg.shape)
+            X.ravel()[S] =1
+            plt.imshow(X, cmap = plt.cm.gray_r)
+            plt.title('Final seeding')
+            plt.show()
+
+        return S, xDistTrans, np.flatnonzero(self.xSeg)             
+    def secondRoundSeeding(self, xDistTrans, S):
+        """
+        % secondRoundSeeding takes the distance solid and the current seeds, and
+        % completes the seeding by adding additional seeds on undersampled regions.
+        % Its speed could be improved.
+        % 
+        % INPUT:
+        %  - D: Distance Solid.
+        %  - S: Set of seeds, as indices of D.
+        % 
+        % OUTPUT:
+        %  - SS: Second set of seeds. It may be empty.
+        % 
+        """
+        DS = np.ceil(2*self.zSmear*xDistTrans.ravel()[S])
+        sz = xDistTrans.shape
+        SS = []
+        for seedIdx, seed in enumerate(S):
+          #this is dimension dependent code
+          (x,y) = np.unravel_index(seed, sz)
+          II = np.arange(-DS[seedIdx],DS[seedIdx]+ 1, dtype = int)
+          xI = x + II;# xI = xI[xI>=0]; xI = xI[ xI <=sz[0]]
+          yI = y + II;# yI = yI[yI>=0]; yI = yI[yI <=sz[1]]
+          for i, j in zip(xI,yI):
+            if i >=0 and i<sz[0] and j >=0 and j <sz[1]:
+              xDistTrans[i, j] = 0
+
+        #@TODO remove this magic number
+        while np.any(xDistTrans) > 1.1:
+          m = np.max(xDistTrans[xDistTrans>0])
+          idx = np.flatnonzero(xDistTrans == m)
+          m = np.ceil(2*self.zSmear*m)
+          (x,y) = np.unravel_index(idx, xDistTrans.shape, dtype = int)
+          II = np.arange(-m, m+1)
+          xI = x + II; xI = xI[xI>1]; xI = xI(xI <sz[0])
+          yI = y + II; yI = yI[xI>1]; yI = yI(yI <sz[1])
+          for i, j in zip(xI,yI):
+            if i >=0 and i<=sz[0] and j >=0 and j <=sz[1]:
+              xDistTrans[i, j] = 0
+          #xDistTrans[xI, yI] = 0
+          SS.append(idx.tolist())
+        return SS  
+
+          
+        
+    def dropSeedByProjection(self, seed, seedRegion, r):
+        """
+        % This function compare the seeds by projections.
+        % 
+        % INPUT:
+        %  - seed: Central Index.
+        %  - seedRegion: List of other seeds to compare.
+        %  - r: The "radius" of the region to be considered.
+        % 
+        % OUTPUT: True or False
+        %  - DROP: The resulting decision value.
+        % 
+        """
+        solidShape = self.xSeg.shape
+        # @TODO verify following 2 lines about setting 1 and 2
+        S = np.zeros(solidShape, dtype = np.uint8)
+        S.ravel()[seedRegion] = 1
+        S.ravel()[seed] = 2
+        
+        seedCoordinate = np.unravel_index(seed, solidShape)    
+        coordinateMin = [ 1 if seedDim < 1 + r else  seedDim - r
+                    for  solidDim ,seedDim in zip(solidShape, seedCoordinate)]
+        coordinateMax = [ solidDim if solidDim < seedDim + r else  seedDim + r
+                    for  solidDim ,seedDim in zip(solidShape, seedCoordinate)]
+        # This is direction dependent code
+        solidROI = self.xSeg[coordinateMin[0]:coordinateMax[0], 
+                             coordinateMin[1]:coordinateMax[1] ]
+        seedROI = self.xSeg[coordinateMin[0]:coordinateMax[0], 
+                             coordinateMin[1]:coordinateMax[1] ]
+        solidROIx = np.max(solidROI, axis = 0)    
+        solidROIy = np.max(solidROI, axis = 1)    
+
+        seedROIx = np.max(seedROI, axis = 0)    
+        seedROIy = np.max(seedROI, axis = 1) 
+        
+        solidROIDist = cv.distanceTransform(solidROI, cv.DIST_L2, 3)    
+        solidROIDist = cv.distanceTransform(solidROI, cv.DIST_L2, 3)    
+        
+    def generateCenterLine(self,LB =.4):
+        S, D, I =self.genSeed(LB)
+#        if config.displayPlotFig:
+        if 0:
+          dst = self.xSeg + 50*self.xSomaSeg
+          plt.imshow(dst)
+          plt.show()
+          X = np.zeros(self.xSeg.shape)
+          X.ravel()[S] =200
+          X = X + 50*self.xSomaSeg
+          plt.imshow(X, cmap = plt.cm.gray_r)
+          plt.title('Seed Points + Soma')
+          plt.show()
+   
+
+        neuriteTracer = NeuriteTracer(self.xSomaSeg, self.xSeg,self.xDistTrans,\
+                                        S, I, self.ac)
+        neuritesGraph =  neuriteTracer.traceNeurites()
+        return neuritesGraph
+    def getStartingSeedOnNeurite(self):
+        """ 
+        # need to identify starting point using soma segmentation
+        # and whole image segmentation.
+        # Currently we enlarge soma bounray by 1.5*radius of enclosing
+        # cricle. Intersection of enlarged soma boundary and segmented image
+        # gives starting point for tracing out different  neurites.
+        # This is not the same as starting point of a neurites  begining from
+        # soma  boundary.
+
+        """
+        done = False
+        img = self.xSeg
+        size = np.size(img)
+        element = cv.getStructuringElement(cv.MORPH_ELLIPSE, (3,3))
+        # Find soma boundary
+        (_, cnts , _)=cv.findContours(self.xSomaSeg.copy() ,cv.RETR_TREE,cv.CHAIN_APPROX_SIMPLE)
+  
+        (_, _), r = cv.minEnclosingCircle(cnts[0])
+        r = int(r) 
+        # @TODO need to expose/improve this choice of 1.5*r 
+        dilatedSoma = cv.dilate(self.xSomaSeg, element, iterations = int(1.5*r))
+        somaBoundaryDila = cv.morphologyEx(dilatedSoma, cv.MORPH_GRADIENT, element)
+        xSegClosed = cv.morphologyEx(self.xSeg, cv.MORPH_CLOSE,\
+             cv.getStructuringElement(cv.MORPH_ELLIPSE, (r/9 +1,r/9 +1)))
+        xPseudoInitialPoints =  xSegClosed*somaBoundaryDila
+        if config.displayPlotFig:
+          plt.imshow(xSegClosed)
+          plt.show()
+
+#          plt.figure()
+#          plt.subplot(121)
+          plt.imshow(xSegClosed + 50*somaBoundaryDila)
+          plt.show()
+#          plt.subplot(122)
+          plt.imshow(xPseudoInitialPoints)
+          plt.show()
+
+        (_, cnts , _) = cv.findContours(xPseudoInitialPoints,\
+                          cv.RETR_TREE,cv.CHAIN_APPROX_SIMPLE)
+        # @TODO using moments looks like an over kill. 
+        # fix with simpler ideas
+        mu =[cv.moments(c)  for c in cnts]
+        centroids = [[int( m['m01']/m['m00']), int(m['m10']/m['m00']) ] \
+                                                          for m in mu]
+        logging.debug('%s number of initial seed points %d', __file__, \
+                                                       len(centroids))
+        logging.debug('Midpoints Points %s', str(centroids))
+        return centroids
+  
+
+        
+
+    
+  
+        
+        
+        
+        
+    
+        
+
+    
+    
+
+
+
+
