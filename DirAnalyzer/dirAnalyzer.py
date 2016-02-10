@@ -1,6 +1,6 @@
 from  __future__ import division
-#import cv2 as cv
-from scipy import ndimage
+import cv2 as cv
+#from scipy import ndimage
 import numpy as np
 import matplotlib.pyplot as plt
 import itertools
@@ -74,8 +74,7 @@ class DirAnalyzer:
                                                           fltParamList, scale)  
           # dirFilters = self._AdjustFilter(np.sum(listofCLinfo[i]),
           # curDirFilters, fltParamList, scale)
-          directionalOutput=[ndimage.convolve(xMask, dirFilter,
-            mode ='constant', cval=0.0) for dirFilter  in dirFilters[2][0]]
+          directionalOutput=[cv.filter2D(xMask, cv.CV_64F, dirFilter) for dirFilter  in dirFilters[2][0]]
           collectDirOutputsAs3D=np.dstack(directionalOutput)
           #TO DO  fix filtering issue cv2. remove .0001 magicnumber
           collectDirOutputsAs3D[collectDirOutputsAs3D<.00001]=0;
